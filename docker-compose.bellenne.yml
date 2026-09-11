@@ -1,0 +1,9 @@
+services:
+  proof-worker:
+    networks:
+      - bellenneone
+
+networks:
+  bellenneone:
+    external: true
+    name: ${BELLENNE_NETWORK:-bellenneone_default}

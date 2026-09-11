@@ -1,0 +1,33 @@
+{
+  "proof_width_mm": 600,
+  "proof_height_mm": 300,
+  "output_dpi": 72,
+  "thumbnail_max_side_mm": 150,
+  "thumbnail_left_offset_mm": 50,
+  "thumbnail_vertical_alignment": "center",
+  "thumbnail_border_px": 2,
+  "crop_rectangle_thickness_px": 2,
+  "analysis_preview_max_side_px": 2000,
+  "candidate_overlap": 0.65,
+  "output_format": "jpeg",
+  "jpeg_quality": 95,
+  "alpha_background": "white",
+  "minimum_confidence": 0.4,
+  "low_confidence_policy": "CONTINUE_WITH_WARNING",
+  "search": {
+    "roots": ["/sources/main"],
+    "extension_priority": [".tif", ".tiff"],
+    "recursive": true,
+    "root_priority": false
+  },
+  "scoring": {
+    "weights": {
+      "content": 0.25,
+      "detail": 0.20,
+      "color": 0.20,
+      "saliency": 0.20,
+      "composition": 0.10,
+      "center": 0.05
+    }
+  }
+}

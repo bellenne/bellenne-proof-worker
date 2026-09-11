@@ -1,0 +1,39 @@
+services:
+  proof-worker:
+    build:
+      context: .
+      target: runtime
+    image: bellenne-proof-worker:0.1.0
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    env_file: ${PROOF_WORKER_ENV_FILE:-.env}
+    environment:
+      WORKER_DATA_PATH: /data
+      WORKER_OUTPUT_PATH: /output
+      WORKER_SOURCE_ROOTS: '["/sources/main"]'
+      WORKER_LISTEN_HOST: 0.0.0.0
+      WORKER_LISTEN_PORT: 8090
+    expose:
+      - "8090"
+    volumes:
+      - worker-data:/data
+      - worker-output:/output
+      - type: bind
+        source: ${SOURCE_MAIN_HOST_PATH:?Set SOURCE_MAIN_HOST_PATH in .env}
+        target: /sources/main
+        bind:
+          create_host_path: false
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+
+volumes:
+  worker-data:
+  worker-output:
