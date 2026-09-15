@@ -68,6 +68,9 @@ class JobRunner:
             and artifact.metadata["published_revision"] > 0
             and isinstance(artifact.metadata.get("published_filename"), str)
             and isinstance(artifact.metadata.get("published_path"), str)
+            and isinstance(artifact.metadata.get("published_source_path"), str)
+            and isinstance(artifact.metadata.get("published_preview_path"), str)
+            and isinstance(artifact.metadata.get("published_preview_sha256"), str)
         )
         if not already_published:
             order_path_value = artifact.metadata.get("source_order_path")
@@ -83,27 +86,38 @@ class JobRunner:
                 self.settings.worker_source_roots,
             )
             atomic_json(workspace.manifest_path, artifact.model_dump(mode="json"))
+        core_artifact = await asyncio.to_thread(
+            self.publisher.result_for_core,
+            artifact,
+            self.settings.worker_source_roots,
+        )
         self.state.update(job.job_id, job.attempt, artifact=artifact.model_dump(mode="json"), stage="READY_TO_UPLOAD", error=None)
         await self.report(job, "UPLOADING", 90)
         self.state.update(job.job_id, job.attempt, upload_intent=1)
         # Recheck digest after recovery/processing and before network submission.
-        if await asyncio.to_thread(file_sha256, artifact.path) != artifact.sha256:
+        if await asyncio.to_thread(file_sha256, core_artifact.path) != core_artifact.sha256:
             raise WorkerError("JOB_STATE_ERROR", "Saved Result changed before upload")
         upload_started = perf_counter()
-        ack = await self.client.upload_result(job.job_id, artifact.path, artifact.sha256, job.attempt, artifact.metadata)
+        ack = await self.client.upload_result(
+            job.job_id,
+            core_artifact.path,
+            core_artifact.sha256,
+            job.attempt,
+            core_artifact.metadata,
+        )
         upload_ms = (perf_counter() - upload_started) * 1000
         self.state.update(job.job_id, job.attempt, stage="COMPLETING")
         atomic_json(workspace.path / "upload.json", ack.model_dump(mode="json"))
-        await self.event(job, "UPLOAD_COMPLETED", {"sha256": artifact.sha256, "result_id": ack.result_id,
+        await self.event(job, "UPLOAD_COMPLETED", {"sha256": core_artifact.sha256, "result_id": ack.result_id,
             "upload_duration_ms": upload_ms, "total_duration_ms": (perf_counter() - started) * 1000})
         # Do not send progress after completion: Core has released the Worker.
         complete = await self.client.complete(job.job_id)
         if complete.attempt != job.attempt:
             raise WorkerError("JOB_STATE_ERROR", "Completion acknowledgement refers to a different attempt")
         self.state.update(job.job_id, job.attempt, stage="DONE")
-        self.log.info("JOB_COMPLETED", job_id=job.job_id, metadata={"sha256": artifact.sha256,
+        self.log.info("JOB_COMPLETED", job_id=job.job_id, metadata={"sha256": core_artifact.sha256,
             "upload_duration_ms": upload_ms, "total_duration_ms": (perf_counter() - started) * 1000})
-        return artifact
+        return core_artifact
 
     async def process(self, job: Job, workspace: Workspace) -> ProofArtifact:
         metrics = {}

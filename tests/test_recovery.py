@@ -11,6 +11,7 @@ import pytest
 from app.api.dto import JobDTO, ResultAck
 from app.core.config import Settings
 from app.core.errors import WorkerError
+from app.files.publisher import OrderPublisher
 from app.models.result import ProofArtifact
 from app.recovery.recovery_manager import RecoveryManager
 from app.storage.state import LocalState
@@ -96,17 +97,24 @@ def write_artifact(settings, dto, stage="READY_TO_UPLOAD", manifest=True):
     rgb[:, :, 0] = 180
     image = pyvips.Image.new_from_memory(rgb.tobytes(), rgb.shape[1], rgb.shape[0], 3, "uchar")
     image.copy(interpretation="srgb", xres=72 / 25.4, yres=72 / 25.4).jpegsave(str(workspace.result_path), Q=95)
-    published_path = settings.worker_output_path / "published.jpg"
     artifact = ProofArtifact(
         path=workspace.result_path,
         sha256=file_sha256(workspace.result_path),
         size_bytes=workspace.result_path.stat().st_size,
-        metadata={
-            "test": True,
-            "published_path": str(published_path),
-            "published_revision": 4,
-            "published_filename": published_path.name,
-        },
+        metadata={"test": True},
+    )
+    order = settings.worker_source_roots[0] / "order"
+    (order / "3").mkdir(parents=True)
+    artifact = artifact.model_copy(
+        update={
+            "metadata": {
+                **artifact.metadata,
+                "source_order_path": str(order),
+            }
+        }
+    )
+    artifact = OrderPublisher().publish(
+        job, workspace, artifact, order, settings.worker_source_roots
     )
     if manifest:
         atomic_json(workspace.manifest_path, artifact.model_dump(mode="json"))
@@ -127,7 +135,7 @@ async def test_saved_result_recovery_skips_source(settings, stage):
     service = WorkerService(settings, state, core)
     # There is deliberately no source storage mounted after restart.
     assert await service.run_once()
-    assert core.uploads == [artifact.sha256]
+    assert core.uploads == [artifact.metadata["published_preview_sha256"]]
     assert state.get("job-1", 1)["stage"] == "DONE"
     assert workspace.result_path.is_file()
     state.close()
@@ -140,8 +148,10 @@ async def test_crash_after_atomic_save_before_manifest(settings):
     workspace, artifact = write_artifact(settings, core.job, manifest=False)
     state.update("job-1", 1, stage="RENDERING")
     await WorkerService(settings, state, core).run_once()
-    assert core.uploads == [artifact.sha256]
-    assert json.loads(workspace.manifest_path.read_text())["metadata"]["recovered_after_save"]
+    assert core.uploads == [artifact.metadata["published_preview_sha256"]]
+    assert json.loads(workspace.manifest_path.read_text(encoding="utf-8"))["metadata"][
+        "recovered_after_save"
+    ]
     state.close()
 
 
@@ -157,7 +167,7 @@ async def test_upload_timeout_after_accept_reuses_identical_result(settings):
     state.close()
     state = LocalState(settings.worker_data_path / "state.db")
     await WorkerService(settings, state, core).run_once()
-    assert core.uploads == [artifact.sha256, artifact.sha256]
+    assert core.uploads == [artifact.metadata["published_preview_sha256"]] * 2
     assert state.get("job-1", 1)["stage"] == "DONE"
     assert workspace.result_path.is_file()
     state.close()

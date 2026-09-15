@@ -269,7 +269,7 @@ Idempotency-Key: <64 lowercase hex characters>
 
 | Part | Тип | Требование |
 | --- | --- | --- |
-| `file` | binary | JPEG, `Content-Type: image/jpeg` |
+| `file` | binary | JPEG из папки `Превью`, `Content-Type: image/jpeg` |
 | `metadata_json` | string | JSON object с обязательными `sha256` и `attempt` |
 
 Минимальный `metadata_json`:
@@ -283,6 +283,12 @@ Idempotency-Key: <64 lowercase hex characters>
 
 `sha256` — SHA-256 фактически переданных байтов файла, 64 lowercase hex-символа.
 `attempt` должен совпадать с попыткой Job.
+
+Worker также передаёт `published_revision`, `published_filename`,
+`published_source_path`, `published_preview_path`, `published_path` (тот же путь
+превью) и `published_preview_sha256`.
+Файл из `Превью` содержит исходную ЦП целиком и добавленную снизу белую полосу с
+чёрной подписью `published_filename` без расширения.
 
 Стандартный ключ идемпотентности:
 

@@ -1,5 +1,8 @@
 from pathlib import Path
 
+from PIL import Image
+
+import app.files.publisher as publisher_module
 from app.files.publisher import OrderPublisher
 from app.models.job import Job
 from app.models.preset import Preset
@@ -20,7 +23,9 @@ def make_job() -> Job:
 def make_artifact(tmp_path: Path) -> ProofArtifact:
     path = tmp_path / "output" / "result.jpg"
     path.parent.mkdir()
-    path.write_bytes(b"rendered proof")
+    Image.new("RGB", (600, 300), (25, 80, 120)).save(
+        path, format="JPEG", quality=95, dpi=(72, 72)
+    )
     return ProofArtifact(
         path=path,
         sha256=file_sha256(path),
@@ -29,18 +34,47 @@ def make_artifact(tmp_path: Path) -> ProofArtifact:
     )
 
 
-def test_publishes_into_next_revision_with_business_filename(tmp_path):
+def test_publishes_source_and_captioned_preview_into_next_revision(tmp_path, monkeypatch):
     order = tmp_path / "source" / "orders" / "123"
     for revision in ("1", "2", "3"):
         (order / revision).mkdir(parents=True)
     workspace = Workspace(tmp_path / "data", tmp_path / "worker-output", "job-1", 1)
-    artifact = OrderPublisher().publish(make_job(), workspace, make_artifact(tmp_path), order, [tmp_path / "source"])
+    rendered = make_artifact(tmp_path)
+    captions = []
+    save_preview = publisher_module.save_captioned_preview
 
-    destination = order / "4" / "ЦП Макет 3 60х30.jpg"
-    assert destination.read_bytes() == b"rendered proof"
-    assert artifact.metadata["published_path"] == str(destination.resolve())
+    def capture_caption(source, destination, caption, **options):
+        captions.append(caption)
+        return save_preview(source, destination, caption, **options)
+
+    monkeypatch.setattr(publisher_module, "save_captioned_preview", capture_caption)
+    artifact = OrderPublisher().publish(
+        make_job(), workspace, rendered, order, [tmp_path / "source"]
+    )
+
+    source = order / "4" / "Исходник" / "ЦП Макет 3 60х30.jpg"
+    preview = order / "4" / "Превью" / "ЦП Макет 3 60х30.jpg"
+    assert source.read_bytes() == rendered.path.read_bytes()
+    assert captions == ["ЦП Макет 3 60х30"]
+    with Image.open(preview) as image:
+        assert image.mode == "RGB"
+        assert image.size == (600, 348)
+        assert all(
+            abs(actual - expected) <= 2
+            for actual, expected in zip(image.getpixel((300, 150)), (25, 80, 120))
+        )
+        strip = image.crop((0, 300, 600, 348))
+        assert min(channel[0] for channel in strip.getextrema()) < 40
+        assert image.getpixel((5, 305)) == (255, 255, 255)
+    assert artifact.metadata["published_path"] == str(preview.resolve())
+    assert artifact.metadata["published_source_path"] == str(source.resolve())
+    assert artifact.metadata["published_preview_path"] == str(preview.resolve())
+    assert artifact.metadata["published_preview_sha256"] == file_sha256(preview)
     assert artifact.metadata["published_revision"] == 4
-    assert artifact.metadata["published_filename"] == destination.name
+    assert artifact.metadata["published_filename"] == preview.name
+    core_artifact = OrderPublisher.result_for_core(artifact, [tmp_path / "source"])
+    assert core_artifact.path == preview.resolve()
+    assert core_artifact.sha256 == file_sha256(preview)
     assert not list(order.glob(".proof-worker-*"))
     assert not (order / "4" / OrderPublisher.marker_name).exists()
 
@@ -56,6 +90,7 @@ def test_retry_reuses_published_revision(tmp_path):
     second = publisher.publish(make_job(), workspace, source, order, [tmp_path / "source"])
 
     assert first.metadata["published_path"] == second.metadata["published_path"]
+    assert first.metadata["published_preview_sha256"] == second.metadata["published_preview_sha256"]
     assert [entry.name for entry in order.iterdir() if entry.name.isdecimal()] == ["3", "4"]
 
 
