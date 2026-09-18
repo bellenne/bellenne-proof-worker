@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 
 from app.core.errors import WorkerError
 from app.files.models import SourceFile
+from app.files.revisions import parse_revision_name
 from app.models.preset import SearchConfig
 
 
@@ -49,11 +50,7 @@ class FileFinder:
 
     @staticmethod
     def _revision(name: str) -> int | None:
-        stripped = name.strip()
-        if not stripped.isdecimal():
-            return None
-        value = int(stripped)
-        return value if value > 0 else None
+        return parse_revision_name(name)
 
     def find(self, source_path: str, layout_number: int, config: SearchConfig) -> SourceFile:
         if (

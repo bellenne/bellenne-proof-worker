@@ -2,6 +2,7 @@ from pathlib import Path
 import zipfile
 
 from PIL import Image
+import pytest
 
 import app.files.publisher as publisher_module
 from app.files.publisher import OrderPublisher
@@ -35,9 +36,10 @@ def make_artifact(tmp_path: Path) -> ProofArtifact:
     )
 
 
-def test_publishes_source_and_captioned_preview_into_next_revision(tmp_path, monkeypatch):
+@pytest.mark.parametrize("revisions", [("1", "2", "3"), ("1 Шумакова", "2", "3 Иванов")])
+def test_publishes_source_and_captioned_preview_into_next_revision(tmp_path, monkeypatch, revisions):
     order = tmp_path / "source" / "orders" / "123"
-    for revision in ("1", "2", "3"):
+    for revision in revisions:
         (order / revision).mkdir(parents=True)
     workspace = Workspace(tmp_path / "data", tmp_path / "worker-output", "job-1", 1)
     rendered = make_artifact(tmp_path)
@@ -113,9 +115,10 @@ def test_filename_follows_square_and_thumbnail_variants():
     ) == "ЦП Макет 3 90х30.jpg"
 
 
-def test_batch_is_published_to_one_revision_and_archived(tmp_path):
+@pytest.mark.parametrize("revision_name", ["3", "3 Шумакова"])
+def test_batch_is_published_to_one_revision_and_archived(tmp_path, revision_name):
     order = tmp_path / "source" / "orders" / "123"
-    (order / "3").mkdir(parents=True)
+    (order / revision_name).mkdir(parents=True)
     workspace = Workspace(tmp_path / "data", tmp_path / "worker-output", "job-1", 1)
     first = make_artifact(tmp_path)
     second_path = workspace.result_path_for(7)

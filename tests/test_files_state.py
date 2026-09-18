@@ -8,6 +8,7 @@ import pytest
 from app.core.errors import WorkerError
 from app.core.lifecycle import ProcessLock
 from app.files.finder import FileFinder
+from app.files.revisions import parse_revision_name
 from app.health import healthy
 from app.logging.setup import redact
 from app.models.preset import Preset, SearchConfig, mm_to_px
@@ -36,15 +37,28 @@ def test_physical_dimensions_and_preset():
         Preset(unknown_business_parameter=1)
 
 
-def test_layout_is_found_in_its_only_revision_folder(tmp_path):
+@pytest.mark.parametrize("revision_name", ["2", "2 Шумакова"])
+def test_layout_is_found_in_its_only_revision_folder(tmp_path, revision_name):
     root, order = order_tree(tmp_path)
+    if revision_name != "2":
+        (order / "2").rename(order / revision_name)
     (order / "1" / "Исходник" / "Макет 1 первый.tif").touch()
-    selected = order / "2" / "Исходник" / "Макет 3 нужный.tif"
+    selected = order / revision_name / "Исходник" / "Макет 3 нужный.tif"
     selected.touch()
     (order / "3" / "Исходник" / "Макет 8 другой.tif").touch()
     result = FileFinder([root]).find("2026/Заказ 123", 3, SearchConfig())
     assert result.path == selected
     assert result.diagnostics["selected_revision"] == 2
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("1", 1), ("1 Шумакова", 1), ("12 Иванов Иван", 12),
+    ("003 Петров", 3), (" 2  Фио ", 2),
+    ("0 Фио", None), ("-1 Фио", None), ("1Фио", None),
+    ("1.5", None), ("Архив 1", None), ("", None),
+])
+def test_revision_name_requires_positive_number_and_separate_label(name, expected):
+    assert parse_revision_name(name) == expected
 
 
 def test_layout_repeated_between_revision_folders_is_structure_error(tmp_path):

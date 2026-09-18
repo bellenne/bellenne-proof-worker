@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.core.errors import WorkerError
+from app.files.revisions import parse_revision_name
 from app.imaging.caption import save_captioned_preview
 from app.models.job import Job
 from app.models.result import ProofArtifact
@@ -24,11 +25,7 @@ class OrderPublisher:
 
     @staticmethod
     def _revision(name: str) -> int | None:
-        stripped = name.strip()
-        if not stripped.isdecimal():
-            return None
-        value = int(stripped)
-        return value if value > 0 else None
+        return parse_revision_name(name)
 
     @staticmethod
     def _dimension(value_mm: float) -> str:
