@@ -1,4 +1,5 @@
 from pathlib import Path
+import zipfile
 
 from PIL import Image
 
@@ -97,3 +98,64 @@ def test_retry_reuses_published_revision(tmp_path):
 def test_filename_uses_preset_dimensions_in_centimetres():
     job = make_job().model_copy(update={"preset": Preset(proof_width_mm=455, proof_height_mm=205)})
     assert OrderPublisher.filename(job) == "ЦП Макет 3 45,5х20,5.jpg"
+
+
+def test_filename_follows_square_and_thumbnail_variants():
+    job = make_job()
+    assert OrderPublisher.filename(
+        job.model_copy(update={"proof_variant": "fragment_30x30"})
+    ) == "ЦП Макет 3 30х30.jpg"
+    assert OrderPublisher.filename(
+        job.model_copy(update={"proof_variant": "thumbnail"})
+    ) == "ЦП Макет 3 Миниатюра.jpg"
+    assert OrderPublisher.filename(
+        job.model_copy(update={"proof_variant": "fragment_90x30"})
+    ) == "ЦП Макет 3 90х30.jpg"
+
+
+def test_batch_is_published_to_one_revision_and_archived(tmp_path):
+    order = tmp_path / "source" / "orders" / "123"
+    (order / "3").mkdir(parents=True)
+    workspace = Workspace(tmp_path / "data", tmp_path / "worker-output", "job-1", 1)
+    first = make_artifact(tmp_path)
+    second_path = workspace.result_path_for(7)
+    Image.new("RGB", (600, 300), (120, 40, 25)).save(second_path, format="JPEG")
+    second_digest = file_sha256(second_path)
+    batch = first.model_copy(update={"metadata": {
+        **first.metadata,
+        "result_kind": "render_batch",
+        "batch_artifacts": [
+            {
+                "layout_number": 3,
+                "path": str(first.path),
+                "sha256": first.sha256,
+                "size_bytes": first.size_bytes,
+                "source_order_path": str(order),
+            },
+            {
+                "layout_number": 7,
+                "path": str(second_path),
+                "sha256": second_digest,
+                "size_bytes": second_path.stat().st_size,
+                "source_order_path": str(order),
+            },
+        ],
+    }})
+
+    result = OrderPublisher().publish_many(
+        make_job().model_copy(update={"layout_numbers": [3, 7]}),
+        workspace,
+        batch,
+        [tmp_path / "source"],
+    )
+
+    assert result.metadata["result_kind"] == "preview_archive"
+    assert result.metadata["published_revision"] == 4
+    assert len(result.metadata["published_files"]) == 2
+    assert (order / "4" / "Исходник" / "ЦП Макет 3 60х30.jpg").is_file()
+    assert (order / "4" / "Исходник" / "ЦП Макет 7 60х30.jpg").is_file()
+    with zipfile.ZipFile(result.path) as archive:
+        assert archive.namelist() == [
+            "ЦП Макет 3 60х30.jpg",
+            "ЦП Макет 7 60х30.jpg",
+        ]

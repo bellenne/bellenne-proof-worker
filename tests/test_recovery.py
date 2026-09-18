@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zipfile
 from types import SimpleNamespace
 
 import numpy as np
@@ -123,6 +124,34 @@ def write_artifact(settings, dto, stage="READY_TO_UPLOAD", manifest=True):
         {"job_id": job.job_id, "attempt": job.attempt, "metadata": artifact.metadata},
     )
     return workspace, artifact
+
+
+def test_recovery_accepts_committed_preview_archive(settings):
+    dto = JobDTO.model_validate(payload())
+    job = dto.to_domain()
+    workspace = Workspace(
+        settings.worker_data_path,
+        settings.worker_output_path,
+        job.job_id,
+        job.attempt,
+    )
+    with zipfile.ZipFile(workspace.archive_path, "w") as archive:
+        archive.writestr("ЦП Макет 3 60х30.jpg", b"preview")
+    artifact = ProofArtifact(
+        path=workspace.archive_path,
+        sha256=file_sha256(workspace.archive_path),
+        size_bytes=workspace.archive_path.stat().st_size,
+        metadata={"result_kind": "preview_archive", "published_revision": 4},
+    )
+    atomic_json(workspace.manifest_path, artifact.model_dump(mode="json"))
+
+    recovered = RecoveryManager().recover_artifact(
+        job,
+        workspace,
+        {"stage": "READY_TO_UPLOAD", "upload_intent": False, "artifact": None},
+    )
+
+    assert recovered == artifact
 
 
 @pytest.mark.parametrize("stage", ["RENDERING", "SAVING", "READY_TO_UPLOAD", "UPLOADING", "COMPLETING"])

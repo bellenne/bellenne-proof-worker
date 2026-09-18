@@ -31,10 +31,22 @@ def crop_rectangle(crop: NormalizedCrop, width: int, height: int) -> tuple[int, 
     return left, top, right - left, bottom - top
 
 
-def create_thumbnail(path: Path, crop: NormalizedCrop, preset: Preset) -> tuple[pyvips.Image, tuple[int, int], tuple[int, int, int, int]]:
+def create_thumbnail_for_crops(
+    path: Path,
+    crops: list[NormalizedCrop],
+    preset: Preset,
+) -> tuple[pyvips.Image, tuple[int, int], list[tuple[int, int, int, int]]]:
+    if not crops:
+        raise WorkerError("RENDER_ERROR", "At least one crop is required for the thumbnail")
     max_side = round(preset.thumbnail_max_side_mm / 25.4 * preset.output_dpi)
     thumb = reduced_rgb(path, max_side, preset.alpha_background)
-    rectangle = crop_rectangle(crop, thumb.width, thumb.height)
+    rectangles = [crop_rectangle(crop, thumb.width, thumb.height) for crop in crops]
     thumb = outline(thumb, (0, 0, thumb.width, thumb.height), preset.thumbnail_border_px)
-    thumb = outline(thumb, rectangle, preset.crop_rectangle_thickness_px)
-    return thumb, thumbnail_position(thumb.width, thumb.height, preset), rectangle
+    for rectangle in rectangles:
+        thumb = outline(thumb, rectangle, preset.crop_rectangle_thickness_px)
+    return thumb, thumbnail_position(thumb.width, thumb.height, preset), rectangles
+
+
+def create_thumbnail(path: Path, crop: NormalizedCrop, preset: Preset) -> tuple[pyvips.Image, tuple[int, int], tuple[int, int, int, int]]:
+    thumb, position, rectangles = create_thumbnail_for_crops(path, [crop], preset)
+    return thumb, position, rectangles[0]

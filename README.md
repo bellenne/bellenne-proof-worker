@@ -90,16 +90,40 @@ docker compose \
 `proof` — внутреннее DNS-имя сервиса Core. Сеть должна уже существовать, то есть
 BellenneOne запускается раньше Worker.
 
-Core Job amoCRM содержит полный UNC-путь папки заказа и номер макета:
+Core Job amoCRM содержит полный UNC-путь папки заказа и снимок заявки виджета:
 
 ```json
 {
   "input": {
     "source_path": "\\\\ip\\дизайн отдел\\Макеты (опт)\\Сентябрь 2026\\33860843",
-    "layout_number": 3
+    "schema": "bellenne-proof/v2",
+    "items": [{
+      "id": "proof-1",
+      "position": 0,
+      "layout_number": "3",
+      "proof_variant": "fragment_90x30",
+      "brightness_direction": null,
+      "brightness_percent": null,
+      "fragments": [
+        {"id": "proof-1:fragment:1", "position": 0, "proof_variant": "fragment_30x30", "brightness_direction": null, "brightness_percent": null},
+        {"id": "proof-1:fragment:2", "position": 1, "proof_variant": "fragment_30x30_color", "brightness_direction": "add", "brightness_percent": 5},
+        {"id": "proof-1:fragment:3", "position": 2, "proof_variant": "fragment_30x30_color", "brightness_direction": "subtract", "brightness_percent": 5}
+      ]
+    }]
   }
 }
 ```
+
+`proof_variant` принимает `fragment_90x30`, `fragment_60x30`, `two_fragments_30x30`,
+`fragment_30x30_color`, `fragment_30x30` или `thumbnail`. Для варианта с
+цветокоррекцией дополнительно передаются
+`brightness_direction` (`add`/`subtract`) и `brightness_percent` (`> 0`, `<= 100`).
+Несмотря на имя полей amoCRM, они изменяют насыщенность, а не светлоту изображения.
+`fragment_90x30` использует один автоматически выбранный участок 30×30: первая
+панель остаётся без изменений, две следующие получают независимые настройки
+насыщенности из `fragments`. Старые `layout_numbers`, `layout_number` и общий
+`proof_variant` продолжают поддерживаться.
+`thumbnail` сохраняет весь макет с пропорциями, 30 см по большей стороне и 150 DPI.
 
 На странице Core **Proof → Workers** настройте соответствие UNC-префикса
 `\\ip\дизайн отдел` каталогу `/sources/main`. Worker заменяет только этот

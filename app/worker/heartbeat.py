@@ -6,7 +6,13 @@ import structlog
 from app import __version__
 from app.core.errors import WorkerError
 
-CAPABILITIES = ["file_search", "rgb_image_processing", "automatic_crop", "proof_render"]
+CAPABILITIES = [
+    "file_search",
+    "rgb_image_processing",
+    "automatic_crop",
+    "proof_render",
+    "proof_90x30",
+]
 
 
 async def interruptible_wait(stop: asyncio.Event, seconds: float):

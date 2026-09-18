@@ -42,5 +42,12 @@ class Workspace:
         self.path.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.result_path = self.output_dir / "result.jpg"
+        self.archive_path = self.output_dir / "result.zip"
         self.manifest_path = self.path / "artifact.json"
         self.publication_path = self.path / "publication.json"
+
+    def result_path_for(self, layout_number: int) -> Path:
+        return self.output_dir / f"result-{layout_number}.jpg"
+
+    def result_path_for_item(self, position: int, layout_number: int) -> Path:
+        return self.output_dir / f"result-{position + 1}-{layout_number}.jpg"

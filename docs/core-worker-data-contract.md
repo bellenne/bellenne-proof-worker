@@ -24,7 +24,20 @@ Core возвращает Job в ответах `claim`, `start`, `complete` и 
   "attempt": 1,
   "input": {
     "source_path": "\\\\ip\\дизайн отдел\\Макеты (опт)\\Сентябрь 2026\\33860843",
-    "layout_number": 3,
+    "schema": "bellenne-proof/v2",
+    "items": [{
+      "id": "proof-1",
+      "position": 0,
+      "layout_number": "3",
+      "proof_variant": "fragment_90x30",
+      "brightness_direction": null,
+      "brightness_percent": null,
+      "fragments": [
+        {"id": "proof-1:fragment:1", "position": 0, "proof_variant": "fragment_30x30", "brightness_direction": null, "brightness_percent": null},
+        {"id": "proof-1:fragment:2", "position": 1, "proof_variant": "fragment_30x30_color", "brightness_direction": "add", "brightness_percent": 5},
+        {"id": "proof-1:fragment:3", "position": 2, "proof_variant": "fragment_30x30_color", "brightness_direction": "subtract", "brightness_percent": 5}
+      ]
+    }],
     "order_number": "12345",
     "public_id": "CRM-12345",
     "metadata": {}
@@ -51,7 +64,8 @@ Core возвращает Job в ответах `claim`, `start`, `complete` и 
 | `delivery_status` | string | `pending`, `delivering`, `delivered`, `failed`, `retrying` |
 | `attempt` | integer | `>= 1` |
 | `input.source_path` | string | Непустой относительный путь либо полный UNC-путь из сделки, максимум 2048 символов |
-| `input.layout_number` | integer | От `1` до `999999`; boolean недопустим |
+| `input.schema` | string | Для заявки виджета ровно `bellenne-proof/v2` |
+| `input.items` | array[object] | От 1 до 100 позиций в порядке `position`; номер макета хранится строкой цифр от `1` до `999999` |
 | `preset` | object | Снимок preset для этой попытки |
 | `preset.id` | string | Идентификатор preset |
 | `preset.name` | string | Название preset |
@@ -65,16 +79,32 @@ Core возвращает Job в ответах `claim`, `start`, `complete` и 
 | `order_number` | string | Если отсутствует, используется `crm_order_id` верхнего уровня |
 | `public_id` | string | `""` |
 | `metadata` | object | `{}` |
+| `brightness_direction` | string или null | Для `fragment_30x30_color` обязательно: `add` или `subtract`; управляет насыщенностью согласно производственному сленгу |
+| `brightness_percent` | number или null | Процент изменения насыщенности: больше `0`, не больше `100` |
+| `layout_number` | integer | Устаревший одиночный вариант; используется, если `layout_numbers` отсутствует |
+| `layout_numbers` | array[integer] | Совместимый старый формат с общим вариантом обработки |
+| `proof_variant` | string | Общий вариант для старого формата |
 
 Для amoCRM `source_path` передаётся как полный UNC-путь из выбранного поля
 сделки. Core-конфигурация Worker содержит соответствие UNC-префикса локальному
 read-only mount. После безопасной замены префикса путь не содержит номер
 ревизии, каталог `Исходник` или имя файла. Артикул в контракт не входит.
 
-Worker загружает в Core фактический Result (изображение), а не CRM-архив. После
-`complete` Core самостоятельно формирует ZIP, загружает его в файловое
-хранилище amoCRM и прикрепляет к сделке. Поэтому повтор CRM-доставки не запускает
-обработку изображения на Worker заново.
+Worker обрабатывает все `layout_numbers` в одной новой ревизии заказа и загружает
+в Core один ZIP с подписанными JPEG из каталога `Превью`. Core проверяет архив,
+загружает эти же байты в Яндекс.Диск и добавляет публичную ссылку в сделку.
+Повтор CRM-доставки не запускает обработку изображения на Worker заново.
+
+В новом формате Worker обрабатывает все `input.items` по порядку. Для
+`fragment_90x30` обязательны ровно три вложенных фрагмента. Каждый использует
+один и тот же выбранный участок 30×30; `fragment_30x30` оставляет его исходным,
+а `fragment_30x30_color` применяет собственные `brightness_direction` и
+`brightness_percent`. Три панели объединяются слева направо в JPEG 90×30.
+
+`fragment_30x30` создаёт один квадратный фрагмент 30×30 см с DPI preset.
+`thumbnail` уменьшает или увеличивает весь макет с сохранением пропорций: большая
+сторона результата равна 30 см при 150 DPI. Обзорная вставка поверх такого
+результата не добавляется.
 
 Полный эталон `preset.parameters` зафиксирован в
 [`examples/preset.json`](../examples/preset.json).
@@ -269,7 +299,7 @@ Idempotency-Key: <64 lowercase hex characters>
 
 | Part | Тип | Требование |
 | --- | --- | --- |
-| `file` | binary | JPEG из папки `Превью`, `Content-Type: image/jpeg` |
+| `file` | binary | ZIP с JPEG из папки `Превью`, `Content-Type: application/zip` |
 | `metadata_json` | string | JSON object с обязательными `sha256` и `attempt` |
 
 Минимальный `metadata_json`:
@@ -284,11 +314,11 @@ Idempotency-Key: <64 lowercase hex characters>
 `sha256` — SHA-256 фактически переданных байтов файла, 64 lowercase hex-символа.
 `attempt` должен совпадать с попыткой Job.
 
-Worker также передаёт `published_revision`, `published_filename`,
-`published_source_path`, `published_preview_path`, `published_path` (тот же путь
-превью) и `published_preview_sha256`.
-Файл из `Превью` содержит исходную ЦП целиком и добавленную снизу белую полосу с
-чёрной подписью `published_filename` без расширения.
+Worker также передаёт `result_kind: "preview_archive"`, `published_revision` и
+`published_files`. Каждый элемент `published_files` содержит номер макета, имя,
+пути опубликованных исходника и превью, размер и SHA-256 превью. Каждый JPEG из
+`Превью` содержит исходную ЦП целиком и добавленную снизу белую полосу с чёрной
+подписью имени файла без расширения.
 
 Стандартный ключ идемпотентности:
 

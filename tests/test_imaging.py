@@ -417,3 +417,184 @@ def test_filename_brackets_are_literal(tmp_path, preset):
     source = make_source(tmp_path / "source[shrink=8].png")
     metadata = SourceValidator().validate(source, preset)
     assert (metadata.width, metadata.height) == (256, 128)
+
+
+def test_two_square_fragments_are_joined_and_both_marked_on_thumbnail(tmp_path, preset):
+    pixels_array = np.zeros((128, 256, 3), dtype=np.uint8)
+    pixels_array[:, :128] = (210, 30, 40)
+    pixels_array[:, 128:] = (20, 190, 60)
+    source = tmp_path / "two-fragments.png"
+    Image.fromarray(pixels_array).save(source)
+    metadata = SourceValidator().validate(source, preset)
+    crops = [
+        NormalizedCrop.from_pixels(32, 32, 64, 64, 256, 128),
+        NormalizedCrop.from_pixels(160, 32, 64, 64, 256, 128),
+    ]
+
+    artifact = ProofRenderer().render_variant(
+        source,
+        crops,
+        preset,
+        tmp_path / "two.jpg",
+        metadata,
+        variant="two_fragments_30x30",
+    )
+
+    with Image.open(artifact.path) as image:
+        assert image.size == (128, 64)
+        assert image.getpixel((50, 50)) == pytest.approx((210, 30, 40), abs=3)
+        assert image.getpixel((100, 50)) == pytest.approx((20, 190, 60), abs=3)
+    assert len(artifact.metadata["thumbnail"]["crop_rectangles"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("direction", "percent", "expected"),
+    [("add", 25, (104, 79, 54)), ("subtract", 20, (97, 81, 65))],
+)
+def test_color_variant_duplicates_fragment_and_adjusts_right_saturation(
+    tmp_path, preset, direction, percent, expected
+):
+    source = make_source(tmp_path / "color.png", color=(100, 80, 60))
+    metadata = SourceValidator().validate(source, preset)
+    crop = NormalizedCrop.from_pixels(80, 32, 64, 64, 256, 128)
+
+    artifact = ProofRenderer().render_variant(
+        source,
+        [crop],
+        preset,
+        tmp_path / f"color-{direction}.jpg",
+        metadata,
+        variant="fragment_30x30_color",
+        brightness_direction=direction,
+        brightness_percent=percent,
+    )
+
+    with Image.open(artifact.path) as image:
+        assert image.getpixel((50, 50)) == pytest.approx((100, 80, 60), abs=3)
+        assert image.getpixel((100, 50)) == pytest.approx(expected, abs=3)
+    assert artifact.metadata["brightness_direction"] == direction
+    assert artifact.metadata["brightness_percent"] == percent
+
+
+def test_90x30_joins_original_and_two_independent_saturation_corrections(
+    tmp_path, preset
+):
+    source = make_source(tmp_path / "color-90x30.png", color=(100, 80, 60))
+    square_preset = preset.model_copy(update={"proof_width_mm": preset.proof_width_mm / 2})
+    render_preset = preset.model_copy(update={"proof_width_mm": preset.proof_width_mm * 1.5})
+    metadata = SourceValidator().validate(source, square_preset)
+    crop = NormalizedCrop.from_pixels(80, 32, 64, 64, 256, 128)
+    fragments = [
+        {
+            "proof_variant": "fragment_30x30",
+            "brightness_direction": None,
+            "brightness_percent": None,
+        },
+        {
+            "proof_variant": "fragment_30x30_color",
+            "brightness_direction": "add",
+            "brightness_percent": 25,
+        },
+        {
+            "proof_variant": "fragment_30x30_color",
+            "brightness_direction": "subtract",
+            "brightness_percent": 20,
+        },
+    ]
+
+    artifact = ProofRenderer().render_variant(
+        source,
+        [crop],
+        render_preset,
+        tmp_path / "proof-90x30.jpg",
+        metadata,
+        variant="fragment_90x30",
+        fragments=fragments,
+    )
+
+    with Image.open(artifact.path) as image:
+        assert image.size == (192, 64)
+        assert image.getpixel((50, 50)) == pytest.approx((100, 80, 60), abs=3)
+        assert image.getpixel((100, 50)) == pytest.approx((104, 79, 54), abs=3)
+        assert image.getpixel((170, 50)) == pytest.approx((97, 81, 65), abs=3)
+    assert artifact.metadata["proof_variant"] == "fragment_90x30"
+    assert artifact.metadata["fragments"] == fragments
+    assert len(artifact.metadata["thumbnail"]["crop_rectangles"]) == 1
+
+
+def test_90x30_keeps_exact_canvas_when_pixel_rounding_differs(tmp_path, preset):
+    source = make_source(tmp_path / "rounding.png")
+    square_preset = preset.model_copy(update={"proof_width_mm": 63.5})
+    render_preset = preset.model_copy(update={"proof_width_mm": 190.5})
+    metadata = SourceValidator().validate(source, square_preset)
+    crop = NormalizedCrop.from_pixels(80, 32, 64, 64, 256, 128)
+
+    artifact = ProofRenderer().render_variant(
+        source,
+        [crop],
+        render_preset,
+        tmp_path / "rounded-90x30.jpg",
+        metadata,
+        variant="fragment_90x30",
+        fragments=[
+            {"proof_variant": "fragment_30x30"},
+            {
+                "proof_variant": "fragment_30x30_color",
+                "brightness_direction": "add",
+                "brightness_percent": 5,
+            },
+            {
+                "proof_variant": "fragment_30x30_color",
+                "brightness_direction": "subtract",
+                "brightness_percent": 5,
+            },
+        ],
+        fragment_width_px=square_preset.width_px,
+    )
+
+    with Image.open(artifact.path) as image:
+        assert image.size == (render_preset.width_px, render_preset.height_px)
+
+
+def test_single_30x30_fragment_uses_square_output(tmp_path, preset):
+    source = make_source(tmp_path / "square-fragment.png")
+    square_preset = preset.model_copy(update={"proof_width_mm": preset.proof_width_mm / 2})
+    metadata = SourceValidator().validate(source, square_preset)
+    crop = NormalizedCrop.from_pixels(80, 32, 64, 64, 256, 128)
+
+    artifact = ProofRenderer().render_variant(
+        source,
+        [crop],
+        square_preset,
+        tmp_path / "square.jpg",
+        metadata,
+        variant="fragment_30x30",
+    )
+
+    with Image.open(artifact.path) as image:
+        assert image.size == (64, 64)
+    assert artifact.metadata["proof_variant"] == "fragment_30x30"
+
+
+@pytest.mark.parametrize(
+    ("source_size", "expected_size"),
+    [((300, 150), (1772, 886)), ((150, 300), (886, 1772))],
+)
+def test_thumbnail_is_full_layout_with_30cm_max_side_at_150_dpi(
+    tmp_path, preset, source_size, expected_size
+):
+    source = make_source(tmp_path / "layout.png", size=source_size)
+    metadata = SourceValidator().validate(source, preset)
+
+    artifact = ProofRenderer().render_thumbnail(
+        source,
+        preset,
+        tmp_path / "thumbnail.jpg",
+        metadata,
+    )
+
+    with Image.open(artifact.path) as image:
+        assert image.size == expected_size
+        assert image.info["dpi"] == pytest.approx((150, 150), abs=0.1)
+    assert artifact.metadata["proof_variant"] == "thumbnail"
+    assert artifact.metadata["thumbnail_max_side_mm"] == 300

@@ -43,17 +43,42 @@ class JobDTO(CoreDTO):
     def to_domain(self) -> Job:
         """Do not let wire JSON or Pydantic input dumps leak into execution errors."""
         source_path = self.input.get("source_path")
-        layout_number = self.input.get("layout_number")
         if not isinstance(source_path, str) or not source_path.strip():
             raise WorkerError("INVALID_CONFIG", "Core Job must provide a nonempty input.source_path.")
-        if isinstance(layout_number, bool) or not isinstance(layout_number, int):
-            raise WorkerError("INVALID_CONFIG", "Core Job must provide an integer input.layout_number.")
+        raw_items = self.input.get("items")
+        if raw_items is not None:
+            if self.input.get("schema") != "bellenne-proof/v2":
+                raise WorkerError("INVALID_CONFIG", "Core Job uses an unsupported proof data schema.")
+            if not isinstance(raw_items, list) or not raw_items:
+                raise WorkerError("INVALID_CONFIG", "Core Job must provide proof items.")
+            first_layout = raw_items[0].get("layout_number") if isinstance(raw_items[0], dict) else None
+            if not isinstance(first_layout, str) or not first_layout.isdecimal():
+                raise WorkerError("INVALID_CONFIG", "Core Job contains an invalid proof item.")
+            layout_numbers = [int(first_layout)]
+        else:
+            layout_numbers = self.input.get("layout_numbers")
+            if layout_numbers is None:
+                layout_numbers = [self.input.get("layout_number")]
+            if (
+                not isinstance(layout_numbers, list)
+                or not layout_numbers
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in layout_numbers)
+            ):
+                raise WorkerError(
+                    "INVALID_CONFIG",
+                    "Core Job must provide positive integers in input.layout_numbers.",
+                )
         try:
             return Job(
                 job_id=self.id,
                 public_id=self.input.get("public_id", ""),
                 source_path=source_path,
-                layout_number=layout_number,
+                layout_number=layout_numbers[0],
+                layout_numbers=layout_numbers,
+                proof_variant=self.input.get("proof_variant", "fragment_60x30"),
+                brightness_direction=self.input.get("brightness_direction"),
+                brightness_percent=self.input.get("brightness_percent"),
+                items=raw_items or [],
                 order_number=self.input.get("order_number", self.crm_order_id),
                 preset=Preset.model_validate(self.preset.parameters),
                 metadata=self.input.get("metadata", {}),

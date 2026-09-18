@@ -225,6 +225,116 @@ async def test_result_timeout_replay_uses_same_key_bytes_and_metadata(tmp_path):
         }
 
 
+async def test_preview_archive_is_uploaded_as_zip(tmp_path):
+    content = b"PK\x03\x04preview-archive"
+    path = tmp_path / "result.zip"
+    path.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(
+            201,
+            json={"result_id": "result-zip", "duplicate": False, "sha256": digest},
+        )
+
+    async with ProofCoreClient(BASE, TOKEN, transport=httpx.MockTransport(handle)) as client:
+        await client.upload_result(JOB_ID, path, digest, 1, {"result_kind": "preview_archive"})
+
+    parts = multipart(requests[0])
+    assert parts["file"].get_filename() == "result.zip"
+    assert parts["file"].get_content_type() == "application/zip"
+
+
+def test_job_dto_accepts_multiple_layouts_and_variant_settings():
+    payload = job_payload()
+    payload["input"] = {
+        "source_path": "orders/42",
+        "layout_numbers": [3, 7],
+        "proof_variant": "fragment_30x30_color",
+        "brightness_direction": "add",
+        "brightness_percent": 15,
+    }
+
+    job = JobDTO.model_validate(payload).to_domain()
+
+    assert job.layout_numbers == [3, 7]
+    assert job.layout_number == 3
+    assert job.proof_variant == "fragment_30x30_color"
+    assert job.brightness_direction == "add"
+    assert job.brightness_percent == 15
+
+
+def test_job_dto_accepts_widget_v2_90x30_fragments():
+    payload = job_payload()
+    payload["input"] = {
+        "source_path": "orders/42",
+        "schema": "bellenne-proof/v2",
+        "revision": 7,
+        "updated_at": "2026-09-17T10:00:00.000Z",
+        "items": [{
+            "id": "proof-1",
+            "position": 0,
+            "layout_number": "3",
+            "proof_variant": "fragment_90x30",
+            "brightness_direction": None,
+            "brightness_percent": None,
+            "fragments": [
+                {
+                    "id": "proof-1:fragment:1",
+                    "position": 0,
+                    "proof_variant": "fragment_30x30",
+                    "brightness_direction": None,
+                    "brightness_percent": None,
+                },
+                {
+                    "id": "proof-1:fragment:2",
+                    "position": 1,
+                    "proof_variant": "fragment_30x30_color",
+                    "brightness_direction": "add",
+                    "brightness_percent": 5,
+                },
+                {
+                    "id": "proof-1:fragment:3",
+                    "position": 2,
+                    "proof_variant": "fragment_30x30_color",
+                    "brightness_direction": "subtract",
+                    "brightness_percent": 2.5,
+                },
+            ],
+        }],
+    }
+
+    job = JobDTO.model_validate(payload).to_domain()
+
+    assert job.layout_numbers == [3]
+    assert job.proof_variant == "fragment_90x30"
+    assert len(job.execution_items()[0].fragments) == 3
+    assert job.execution_items()[0].fragments[1].brightness_percent == 5
+    assert job.execution_items()[0].fragments[2].brightness_direction == "subtract"
+
+
+def test_job_dto_rejects_incomplete_90x30_fragments():
+    payload = job_payload()
+    payload["input"] = {
+        "source_path": "orders/42",
+        "schema": "bellenne-proof/v2",
+        "items": [{
+            "id": "proof-1",
+            "position": 0,
+            "layout_number": "3",
+            "proof_variant": "fragment_90x30",
+            "brightness_direction": None,
+            "brightness_percent": None,
+            "fragments": [],
+        }],
+    }
+
+    with pytest.raises(WorkerError, match="does not match the Worker contract"):
+        JobDTO.model_validate(payload).to_domain()
+
+
 async def test_changed_saved_file_is_never_uploaded(tmp_path):
     path = tmp_path / "proof.jpg"
     path.write_bytes(b"different result")

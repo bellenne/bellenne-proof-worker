@@ -259,7 +259,13 @@ class ProofCoreClient:
                 payload = await self._request(
                     "result", job_id, headers={"Idempotency-Key": key},
                     data={"metadata_json": metadata_json},
-                    files={"file": (output.name, stream, "image/jpeg")},
+                    files={
+                        "file": (
+                            output.name,
+                            stream,
+                            "application/zip" if output.suffix.casefold() == ".zip" else "image/jpeg",
+                        )
+                    },
                 )
         except OSError:
             raise WorkerError("UPLOAD_ERROR", "Cannot read the saved Result for upload.", retryable=False) from None
