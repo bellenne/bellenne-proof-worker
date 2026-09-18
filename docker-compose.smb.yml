@@ -1,0 +1,47 @@
+# Standalone alternative to docker-compose.yml (do not combine both files).
+# Add SMB_USERNAME and SMB_PASSWORD to .env before using this file.
+services:
+  proof-worker:
+    build:
+      context: .
+      target: runtime
+    image: bellenne-proof-worker:0.1.0
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    env_file: ${PROOF_WORKER_ENV_FILE:-.env}
+    environment:
+      WORKER_DATA_PATH: /data
+      WORKER_OUTPUT_PATH: /output
+      WORKER_SOURCE_ROOTS: '["/sources/main"]'
+      WORKER_LISTEN_HOST: 0.0.0.0
+      WORKER_LISTEN_PORT: 8090
+    expose:
+      - "8090"
+    volumes:
+      - worker-data:/data
+      - worker-output:/output
+      - type: volume
+        source: source-smb
+        target: /sources/main
+        volume:
+          nocopy: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+
+volumes:
+  worker-data:
+  worker-output:
+  source-smb:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//192.168.1.88/дизайн отдел"
+      o: "addr=192.168.1.88,username=${SMB_USERNAME:?Set SMB_USERNAME in .env},password=${SMB_PASSWORD:?Set SMB_PASSWORD in .env},prefixpath=Макеты (опт),vers=3.0,rw,uid=10001,gid=10001,file_mode=0660,dir_mode=0770"
