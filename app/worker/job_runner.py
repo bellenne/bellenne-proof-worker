@@ -10,6 +10,7 @@ from app.api.proof_core_client import ProofCoreClient
 from app.core.config import Settings
 from app.core.errors import WorkerError
 from app.files.finder import FileFinder
+from app.files.local_sources import LocalSources
 from app.files.publisher import OrderPublisher
 from app.imaging.analysis.analyzer import CropAnalyzer
 from app.imaging.loader import SourceValidator
@@ -142,15 +143,16 @@ class JobRunner:
     async def process(self, job: Job, workspace: Workspace) -> ProofArtifact:
         proof_items = job.execution_items()
         artifacts: list[ProofArtifact] = []
-        for index, proof_item in enumerate(proof_items):
-            output = (
-                workspace.result_path
-                if index == 0
-                else workspace.result_path_for_item(index, proof_item.layout_number)
-            )
-            artifacts.append(
-                await self._process_layout(job, workspace, proof_item, output)
-            )
+        with LocalSources(workspace.path) as local_sources:
+            for index, proof_item in enumerate(proof_items):
+                output = (
+                    workspace.result_path
+                    if index == 0
+                    else workspace.result_path_for_item(index, proof_item.layout_number)
+                )
+                artifacts.append(
+                    await self._process_layout(job, workspace, proof_item, output, local_sources)
+                )
         order_paths = {item.metadata.get("source_order_path") for item in artifacts}
         if len(order_paths) != 1 or not all(isinstance(value, str) for value in order_paths):
             raise WorkerError("INVALID_CONFIG", "All requested layouts must belong to one order directory")
@@ -196,6 +198,7 @@ class JobRunner:
         workspace: Workspace,
         proof_item: ProofItem,
         output: Path,
+        local_sources: LocalSources,
     ) -> ProofArtifact:
         layout_number = proof_item.layout_number
         proof_variant = proof_item.proof_variant
@@ -204,7 +207,16 @@ class JobRunner:
 
         async def timed(name, function, *args, **kwargs):
             step_started = perf_counter()
-            result = await asyncio.to_thread(function, *args, **kwargs)
+            task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+            try:
+                result = await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # A thread keeps running after cancellation. Do not delete its
+                # local source until the copy/decoder has released the file.
+                try:
+                    await task
+                finally:
+                    raise
             metrics[f"{name}_duration_ms"] = (perf_counter() - step_started) * 1000
             return result
 
@@ -213,6 +225,23 @@ class JobRunner:
             "search", self.finder.find, job.source_path, layout_number, job.preset.search
         )
         await self.event(job, "SOURCE_FOUND", source.diagnostics)
+        # Keep Core's existing stage names; copying is visible in local logs.
+        self.log.info("COPYING_SOURCE", job_id=job.job_id,
+                      metadata={"layout_number": layout_number, "source": str(source.path)})
+        last_copy_log = perf_counter()
+
+        def copy_progress(copied, total):
+            nonlocal last_copy_log
+            now = perf_counter()
+            if now - last_copy_log >= 10:
+                self.log.info("SOURCE_COPY_PROGRESS", job_id=job.job_id,
+                              metadata={"copied_bytes": copied, "total_bytes": total})
+                last_copy_log = now
+
+        local_path = await timed("source_copy", local_sources.copy, source.path, copy_progress)
+        self.log.info("SOURCE_COPIED", job_id=job.job_id,
+                      metadata={"path": str(local_path),
+                                "duration_ms": metrics["source_copy_duration_ms"]})
         await self.report(job, "VALIDATING_SOURCE", 15)
         analysis_preset = job.preset
         validation_preset = job.preset
@@ -228,7 +257,7 @@ class JobRunner:
                 update={"proof_width_mm": job.preset.proof_width_mm / 2}
             )
             validation_preset = analysis_preset
-        metadata = await timed("validation", self.validator.validate, source.path, validation_preset)
+        metadata = await timed("validation", self.validator.validate, local_path, validation_preset)
         await self.report(job, "READING_METADATA", 20)
         metadata_started = perf_counter()
         source_metadata = metadata.to_processing_dict()
@@ -241,7 +270,7 @@ class JobRunner:
             artifact = await timed(
                 "render",
                 self.renderer.render_thumbnail,
-                source.path,
+                local_path,
                 job.preset,
                 output,
                 metadata,
@@ -271,7 +300,7 @@ class JobRunner:
             )
             return artifact
         await self.report(job, "CREATING_PREVIEW", 30)
-        preview = await timed("preview", self.preview.generate, source.path, analysis_preset)
+        preview = await timed("preview", self.preview.generate, local_path, analysis_preset)
         await self.report(job, "ANALYZING", 45)
         analysis = await timed(
             "analysis",
@@ -328,7 +357,7 @@ class JobRunner:
         artifact = await timed(
             "render",
             self.renderer.render_variant,
-            source.path,
+            local_path,
             crops,
             render_preset,
             output,

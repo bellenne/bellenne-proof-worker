@@ -14,10 +14,70 @@ from app.core.config import Settings
 from app.core.errors import WorkerError
 from app.files.publisher import OrderPublisher
 from app.models.result import ProofArtifact
+from app.models.preset import Preset
+from app.models.job import ProofItem
 from app.recovery.recovery_manager import RecoveryManager
 from app.storage.state import LocalState
 from app.storage.workspace import Workspace, atomic_json, file_sha256
 from app.worker.service import WorkerService
+
+
+@pytest.mark.parametrize("variant", ["fragment_60x30", "thumbnail", "fragment_90x30"])
+async def test_processing_uses_local_copy_and_publishes_to_original_order(settings, monkeypatch, variant):
+    core = FakeCore()
+    job = core.job.to_domain().model_copy(update={
+        "proof_variant": variant,
+        "preset": Preset(proof_width_mm=128, proof_height_mm=64, output_dpi=25.4,
+                         thumbnail_max_side_mm=20, thumbnail_left_offset_mm=10,
+                         analysis_preview_max_side_px=128),
+    })
+    if variant == "fragment_90x30":
+        job = job.model_copy(update={"items": [ProofItem(
+            id="item-1", position=0, layout_number=3, proof_variant=variant,
+            fragments=[
+                {"id": "a", "position": 0, "proof_variant": "fragment_30x30"},
+                {"id": "b", "position": 1, "proof_variant": "fragment_30x30_color",
+                 "brightness_direction": "add", "brightness_percent": 10},
+                {"id": "c", "position": 2, "proof_variant": "fragment_30x30_color",
+                 "brightness_direction": "subtract", "brightness_percent": 10},
+            ],
+        )]})
+    source = settings.worker_source_roots[0] / "order" / "1 Иванов" / "Исходник" / "Макет 3.tif"
+    source.parent.mkdir(parents=True)
+    pixels = np.random.default_rng(5).integers(0, 256, (256, 256, 3), dtype=np.uint8)
+    pyvips.Image.new_from_memory(pixels.tobytes(), 256, 256, 3, "uchar").copy(
+        interpretation="srgb"
+    ).tiffsave(str(source))
+    original_digest = file_sha256(source)
+    state = LocalState(settings.worker_data_path / "state.db")
+    state.claim(core.job.model_dump(mode="json"))
+    runner = WorkerService(settings, state, core).runner
+    visited = []
+
+    def assert_local(function):
+        def wrapped(path, *args, **kwargs):
+            assert path.is_relative_to(settings.worker_data_path)
+            assert file_sha256(path) == original_digest
+            assert path != source
+            visited.append(path)
+            return function(path, *args, **kwargs)
+        return wrapped
+
+    for owner, method in [(runner.validator, "validate"), (runner.preview, "generate"),
+                          (runner.renderer, "render_variant"), (runner.renderer, "render_thumbnail")]:
+        monkeypatch.setattr(owner, method, assert_local(getattr(owner, method)))
+    try:
+        artifact = await runner.run(job)
+        assert len(visited) == (2 if variant == "thumbnail" else 3)
+        assert len(set(visited)) == 1
+        assert not visited[0].exists()
+        assert file_sha256(source) == original_digest
+        assert artifact.metadata["published_revision"] == 2
+        assert list((source.parents[2] / "2" / "Исходник").glob("*.jpg"))
+        assert list((source.parents[2] / "2" / "Превью").glob("*.jpg"))
+        assert core.uploads
+    finally:
+        state.close()
 
 
 def payload(attempt=1, source_path="order", layout_number=3, job_id="job-1"):
